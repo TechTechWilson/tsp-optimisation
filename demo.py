@@ -74,21 +74,9 @@ t0 = time.perf_counter()
 ga_tour, ga_len, ga_hist = genetic_algorithm(dist, seed=0)
 print(f"Genetic Algorithm   : {ga_len:8.2f}  ({time.perf_counter()-t0:.2f}s)")
 
-# Record the best overall route to an external file (brief requirement).
-best_len, best_tour = min(
-    [(hc_len, hc_tour), (sa_len, sa_tour), (ts_len, ts_tour), (ga_len, ga_tour)],
-    key=lambda pair: pair[0],
-)
-print(f"\nShortest distance found: {best_len:.4f}")
-write_route(best_tour, dist, "results/best_route.txt")
-
-# Route plots.
-plot_tour(sa_tour, coords, dist, "Simulated Annealing best tour",
-          "results/route_sa.png")
-plot_tour(ga_tour, coords, dist, "Genetic Algorithm best tour",
-          "results/route_ga.png")
-plot_tour(ts_tour, coords, dist, "Tabu Search best tour",
-          "results/route_tabu.png")
+# The best route and the route plots are written *after* the repeated
+# runs below, so that they record the true best tour found across the
+# whole study rather than the single seed=0 demonstration run.
 
 # Convergence comparison.
 plot_convergence(
@@ -117,6 +105,26 @@ ga_res = run_repeated("Genetic Algorithm", genetic_algorithm, dist,
 for res in (hc_res, sa_res, ts_res, ga_res):
     print(f"{res.name:20s}: mean={res.mean_length:8.2f}  "
           f"std={res.std_length:6.2f}  mean_time={res.mean_time:.3f}s")
+
+# Record the best overall route across ALL repeated runs (brief
+# requirement). RunResult.best_tour already holds the best tour each
+# algorithm found over its repeats, so the study-wide best is simply the
+# shortest of those four. Writing it here (rather than from the single
+# seed=0 demonstration) guarantees the recorded best is never worse than
+# any per-algorithm mean reported in the results table.
+best_res = min((hc_res, sa_res, ts_res, ga_res), key=lambda r: min(r.lengths))
+print(f"\nShortest distance found (best of {N_RUNS} runs each): "
+      f"{min(best_res.lengths):.4f}  [{best_res.name}]")
+write_route(best_res.best_tour, dist, "results/best_route.txt")
+
+# Route plots use each algorithm's best tour across all repeats, so the
+# figures are consistent with the tour lengths reported in the tables.
+plot_tour(sa_res.best_tour, coords, dist, "Simulated Annealing best tour",
+          "results/route_sa.png")
+plot_tour(ga_res.best_tour, coords, dist, "Genetic Algorithm best tour",
+          "results/route_ga.png")
+plot_tour(ts_res.best_tour, coords, dist, "Tabu Search best tour",
+          "results/route_tabu.png")
 
 # Primary test required by the brief: single-member vs evolutionary.
 print("\nHypothesis test 1 - Simulated Annealing vs Genetic Algorithm")

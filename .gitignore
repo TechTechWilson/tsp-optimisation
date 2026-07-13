@@ -6,6 +6,9 @@ __pycache__/
 venv/
 .pytest_cache/
 
-# Results that can be regenerated
-results/*.png
+# IDE / OS
+.idea/
 .DS_Store
+
+# Original zip staging
+tsp_root/
