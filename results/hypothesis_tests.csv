@@ -1,0 +1,4 @@
+test,statistic,p_value,effect_size_d
+Welch t-test (tour length),-8.838541656553259,1.844421971534955e-10,-2.2821016427060856
+Mann-Whitney U (tour length),19.5,2.039150815936608e-10,
+Welch t-test (runtime),-98.64142426306692,3.239344196454016e-38,-25.469106227802563

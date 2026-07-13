@@ -1,0 +1,55 @@
+# Best tour found
+# Cities: 50
+# Total distance: 571.7420
+# order,city_index,city_name
+0,45,City_46
+1,13,City_14
+2,20,City_21
+3,29,City_30
+4,28,City_29
+5,49,City_50
+6,2,City_3
+7,7,City_8
+8,18,City_19
+9,41,City_42
+10,39,City_40
+11,24,City_25
+12,15,City_16
+13,10,City_11
+14,14,City_15
+15,38,City_39
+16,35,City_36
+17,6,City_7
+18,31,City_32
+19,44,City_45
+20,47,City_48
+21,19,City_20
+22,48,City_49
+23,9,City_10
+24,30,City_31
+25,42,City_43
+26,11,City_12
+27,23,City_24
+28,8,City_9
+29,32,City_33
+30,22,City_23
+31,12,City_13
+32,4,City_5
+33,37,City_38
+34,43,City_44
+35,1,City_2
+36,46,City_47
+37,40,City_41
+38,25,City_26
+39,17,City_18
+40,26,City_27
+41,27,City_28
+42,0,City_1
+43,34,City_35
+44,16,City_17
+45,5,City_6
+46,21,City_22
+47,3,City_4
+48,36,City_37
+49,33,City_34
+50,45,City_46  # return to start

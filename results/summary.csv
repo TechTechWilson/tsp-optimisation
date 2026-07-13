@@ -1,0 +1,11 @@
+size,algorithm,mean_distance,std_distance,best_distance,mean_time
+10,Genetic Algorithm,290.307,0.0,290.307,1.485
+10,Hill Climbing,290.307,0.0,290.307,0.005
+20,Genetic Algorithm,386.522,0.1,386.43,1.637
+20,Hill Climbing,386.43,0.0,386.43,0.013
+30,Genetic Algorithm,470.558,15.216,451.767,1.779
+30,Hill Climbing,452.052,0.738,451.767,0.025
+40,Genetic Algorithm,524.099,26.618,489.732,1.937
+40,Hill Climbing,490.037,0.44,489.732,0.047
+50,Genetic Algorithm,601.078,19.406,568.425,2.108
+50,Hill Climbing,568.116,6.376,559.865,0.061
