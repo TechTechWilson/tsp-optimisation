@@ -1,361 +1,205 @@
-"""Experimental harness for the TSP algorithm comparison.
+"""Experiment harness for comparing TSP search algorithms.
 
-Running this module end to end reproduces every number and every figure quoted
-in the technical report.
+This module turns the individual algorithms into a fair, repeatable
+experiment. It provides:
 
-Methodology in brief:
+* ``run_repeated`` - run a stochastic algorithm many times and collect
+  the best length and wall-clock time of each run,
+* ``statistical_comparison`` - test whether the difference in solution
+  quality between two algorithms is statistically significant (the
+  brief explicitly asks for a hypothesis test such as a t-test), and
+* ``scalability_study`` - measure how solution quality and run time grow
+  as the number of cities increases from 10 up to 50.
 
-* Both algorithms are stochastic, so a single run tells us nothing. Each
-  algorithm is run ``RUNS`` independent times at each problem size, with a
-  distinct seed per run, and we report the distribution rather than a single
-  best case.
-* Scalability is measured by repeating the whole comparison at 10, 20, 30, 40
-  and 50 cities, taking the first ``k`` rows of the dataset as the instance.
-* The full 50-city results are then subjected to two hypothesis tests: Welch's
-  t-test (does not assume equal variances) and the Mann-Whitney U test (does
-  not assume normality). Agreement between a parametric and a non-parametric
-  test guards against a conclusion that is an artefact of one test's
-  assumptions.
-
-Usage:
-    python experiments.py
+Running a randomised algorithm only once is not enough to draw
+conclusions, because a single run can be lucky or unlucky. Every helper
+here therefore repeats each algorithm with different seeds and reports
+the mean and spread.
 """
 
 from __future__ import annotations
 
-import os
 import time
+from dataclasses import dataclass, field
 
-import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy import stats
 
-from genetic import genetic_algorithm
-from hill_climbing import hill_climb_random_restart
-from tsp_core import distance_matrix, load_cities, save_route, tour_length
 
-# Render to file rather than to a screen: the harness runs head-less.
-matplotlib.use("Agg")
+@dataclass
+class RunResult:
+    """Container for the outcome of repeated runs of one algorithm.
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
-DATA = os.path.join(ROOT, "data", "cities.csv")
-RESULTS = os.path.join(ROOT, "results")
-FIGURES = os.path.join(ROOT, "figures")
+    Attributes:
+        name: Human-readable algorithm name.
+        lengths: Best tour length from each repeat.
+        times: Wall-clock seconds taken by each repeat.
+        best_tour: The single best tour found across all repeats.
+        best_history: Convergence history of that best run.
+    """
 
-SIZES = [10, 20, 30, 40, 50]
-RUNS = 30
-MASTER_SEED = 42
+    name: str
+    lengths: list[float] = field(default_factory=list)
+    times: list[float] = field(default_factory=list)
+    best_tour: list[int] = field(default_factory=list)
+    best_history: list[float] = field(default_factory=list)
 
-HC_RESTARTS = 20
-GA_PARAMS = dict(
-    population_size=150,
-    generations=400,
-    crossover_rate=0.9,
-    mutation_rate=0.2,
-    tournament_size=5,
-    elitism=4,
-)
+    @property
+    def mean_length(self) -> float:
+        """Mean best length across repeats."""
+        return float(np.mean(self.lengths))
+
+    @property
+    def std_length(self) -> float:
+        """Standard deviation of best length (a robustness measure)."""
+        return float(np.std(self.lengths))
+
+    @property
+    def mean_time(self) -> float:
+        """Mean wall-clock seconds across repeats."""
+        return float(np.mean(self.times))
 
 
-def _timed(function, *args, **kwargs):
-    """Call ``function`` and return its result alongside the wall-clock time.
+def run_repeated(
+    name: str,
+    algorithm,
+    dist: np.ndarray,
+    n_runs: int = 10,
+    base_seed: int = 0,
+    **kwargs,
+) -> RunResult:
+    """Run a stochastic algorithm ``n_runs`` times and gather statistics.
 
     Args:
-        function (Callable): The function to time.
-        *args: Positional arguments forwarded to ``function``.
-        **kwargs: Keyword arguments forwarded to ``function``.
+        name: Label for the algorithm (used in tables and plots).
+        algorithm: A callable returning ``(tour, length, history)`` and
+            accepting a ``seed`` keyword argument.
+        dist: Distance matrix for the instance.
+        n_runs: Number of independent repeats.
+        base_seed: Seeds used are ``base_seed + run_index`` so the whole
+            study is reproducible.
+        **kwargs: Extra hyperparameters forwarded to ``algorithm``.
 
     Returns:
-        tuple: ``(result, elapsed_seconds)``.
+        A populated :class:`RunResult`.
     """
-    start = time.perf_counter()
-    result = function(*args, **kwargs)
-    return result, time.perf_counter() - start
+    result = RunResult(name=name)
+    best_overall = float("inf")
 
-
-def run_scalability(coords, sizes=None):
-    """Run both algorithms ``RUNS`` times at each problem size.
-
-    Args:
-        coords (numpy.ndarray): Full ``(50, 2)`` coordinate array.
-        sizes (Sequence[int] | None): Problem sizes to evaluate. Defaults to
-            the module-level ``SIZES``.
-
-    Returns:
-        pandas.DataFrame: One row per (size, algorithm, run) with the tour
-        length and the runtime in seconds.
-    """
-    rows = []
-    for size in (SIZES if sizes is None else sizes):
-        dist = distance_matrix(coords[:size])
-        print(f"--- {size} cities ---", flush=True)
-
-        for run in range(RUNS):
-            rng = np.random.default_rng(MASTER_SEED + 1000 * size + run)
-            (_, length, _), elapsed = _timed(
-                hill_climb_random_restart, dist, HC_RESTARTS, rng
-            )
-            rows.append(
-                {"size": size, "algorithm": "Hill Climbing", "run": run,
-                 "distance": length, "time": elapsed}
-            )
-
-        for run in range(RUNS):
-            rng = np.random.default_rng(MASTER_SEED + 1000 * size + run)
-            (_, length, _), elapsed = _timed(
-                genetic_algorithm, dist, rng=rng, **GA_PARAMS
-            )
-            rows.append(
-                {"size": size, "algorithm": "Genetic Algorithm", "run": run,
-                 "distance": length, "time": elapsed}
-            )
-
-    return pd.DataFrame(rows)
-
-
-def tune_genetic_algorithm(dist, runs=5):
-    """Grid-search a handful of GA configurations on the full instance.
-
-    The sweep isolates the two parameters with the largest effect on the
-    exploration/exploitation balance: selection pressure (tournament size) and
-    mutation rate. Each configuration is run several times because a single
-    run of a stochastic algorithm cannot rank configurations reliably.
-
-    Args:
-        dist (numpy.ndarray): Distance matrix of the full instance.
-        runs (int): Independent runs per configuration.
-
-    Returns:
-        pandas.DataFrame: Mean and standard deviation of the tour length for
-        each configuration, sorted best first.
-    """
-    grid = [
-        {"tournament_size": 2, "mutation_rate": 0.2},
-        {"tournament_size": 5, "mutation_rate": 0.2},
-        {"tournament_size": 9, "mutation_rate": 0.2},
-        {"tournament_size": 5, "mutation_rate": 0.05},
-        {"tournament_size": 5, "mutation_rate": 0.5},
-        {"tournament_size": 9, "mutation_rate": 0.5},
-    ]
-
-    rows = []
-    for config in grid:
-        params = dict(GA_PARAMS)
-        params.update(config)
-        lengths = []
-        for run in range(runs):
-            rng = np.random.default_rng(MASTER_SEED + run)
-            _, length, _ = genetic_algorithm(dist, rng=rng, **params)
-            lengths.append(length)
-        rows.append(
-            {"tournament_size": config["tournament_size"],
-             "mutation_rate": config["mutation_rate"],
-             "mean_distance": float(np.mean(lengths)),
-             "std_distance": float(np.std(lengths, ddof=1))}
+    for run in range(n_runs):
+        start = time.perf_counter()
+        tour, length, history = algorithm(
+            dist, seed=base_seed + run, **kwargs
         )
-        print(f"  k={config['tournament_size']} "
-              f"mut={config['mutation_rate']} -> "
-              f"{rows[-1]['mean_distance']:.2f}", flush=True)
+        elapsed = time.perf_counter() - start
 
-    return pd.DataFrame(rows).sort_values("mean_distance").reset_index(drop=True)
+        result.lengths.append(length)
+        result.times.append(elapsed)
+        if length < best_overall:
+            best_overall = length
+            result.best_tour = tour
+            result.best_history = history
 
-
-def hypothesis_tests(frame, size=50):
-    """Test whether the two algorithms differ in solution quality and runtime.
-
-    Args:
-        frame (pandas.DataFrame): Output of :func:`run_scalability`.
-        size (int): Problem size to test on.
-
-    Returns:
-        pandas.DataFrame: One row per test with the statistic, the p-value and
-        the effect size (Cohen's d for the t-tests).
-    """
-    subset = frame[frame["size"] == size]
-    hc = subset[subset["algorithm"] == "Hill Climbing"]
-    ga = subset[subset["algorithm"] == "Genetic Algorithm"]
-
-    def cohens_d(a, b):
-        """Standardised mean difference using the pooled standard deviation."""
-        pooled = np.sqrt(((len(a) - 1) * a.var(ddof=1)
-                          + (len(b) - 1) * b.var(ddof=1))
-                         / (len(a) + len(b) - 2))
-        return float((a.mean() - b.mean()) / pooled)
-
-    t_stat, t_p = stats.ttest_ind(hc["distance"], ga["distance"],
-                                  equal_var=False)
-    u_stat, u_p = stats.mannwhitneyu(hc["distance"], ga["distance"],
-                                     alternative="two-sided")
-    tt_stat, tt_p = stats.ttest_ind(hc["time"], ga["time"], equal_var=False)
-
-    return pd.DataFrame([
-        {"test": "Welch t-test (tour length)", "statistic": t_stat,
-         "p_value": t_p, "effect_size_d": cohens_d(hc["distance"],
-                                                   ga["distance"])},
-        {"test": "Mann-Whitney U (tour length)", "statistic": u_stat,
-         "p_value": u_p, "effect_size_d": np.nan},
-        {"test": "Welch t-test (runtime)", "statistic": tt_stat,
-         "p_value": tt_p, "effect_size_d": cohens_d(hc["time"], ga["time"])},
-    ])
+    return result
 
 
-def make_figures(frame, coords, dist, names):
-    """Produce every figure used in the report.
+def statistical_comparison(
+    result_a: RunResult,
+    result_b: RunResult,
+    alpha: float = 0.05,
+) -> dict[str, float | str | bool]:
+    """Test whether two algorithms differ significantly in tour length.
+
+    The procedure is:
+
+    1. Check each sample for normality with the Shapiro-Wilk test.
+    2. If both look normal, run Welch's independent two-sample t-test
+       (Welch's variant does not assume equal variances).
+    3. Otherwise fall back to the non-parametric Mann-Whitney U test.
 
     Args:
-        frame (pandas.DataFrame): Output of :func:`run_scalability`.
-        coords (numpy.ndarray): Full coordinate array.
-        dist (numpy.ndarray): Full distance matrix.
-        names (list[str]): City names.
+        result_a: Results for the first algorithm.
+        result_b: Results for the second algorithm.
+        alpha: Significance level (default 0.05).
 
     Returns:
-        dict: Mapping of figure name to the tour it depicts, for the two route
-        plots. Used by the caller to record the best routes.
+        A dictionary summarising the test used, the p-value, and a
+        plain-English conclusion.
     """
-    os.makedirs(FIGURES, exist_ok=True)
-    palette = {"Hill Climbing": "#1f77b4", "Genetic Algorithm": "#d62728"}
+    a = np.asarray(result_a.lengths)
+    b = np.asarray(result_b.lengths)
 
-    # Figure 1: solution quality distribution at 50 cities.
-    full = frame[frame["size"] == 50]
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
-    data = [full[full["algorithm"] == a]["distance"] for a in palette]
-    axes[0].boxplot(data, tick_labels=list(palette))
-    axes[0].set_ylabel("Tour length")
-    axes[0].set_title(f"Solution quality, 50 cities ({RUNS} runs)")
-    axes[0].grid(alpha=0.3)
+    # Shapiro-Wilk needs at least three samples to be meaningful.
+    normal_a = stats.shapiro(a).pvalue > alpha if len(a) >= 3 else False
+    normal_b = stats.shapiro(b).pvalue > alpha if len(b) >= 3 else False
 
-    times = [full[full["algorithm"] == a]["time"] for a in palette]
-    axes[1].boxplot(times, tick_labels=list(palette))
-    axes[1].set_ylabel("Runtime (s)")
-    axes[1].set_yscale("log")
-    axes[1].set_title(f"Runtime, 50 cities ({RUNS} runs)")
-    axes[1].grid(alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(os.path.join(FIGURES, "fig1_quality_runtime_boxplot.png"),
-                dpi=150)
-    plt.close(fig)
+    if normal_a and normal_b:
+        test_name = "Welch's t-test"
+        _, p_value = stats.ttest_ind(a, b, equal_var=False)
+    else:
+        test_name = "Mann-Whitney U test"
+        _, p_value = stats.mannwhitneyu(a, b, alternative="two-sided")
 
-    # Figure 2: scalability of quality and runtime.
-    summary = frame.groupby(["size", "algorithm"]).agg(
-        mean_distance=("distance", "mean"),
-        std_distance=("distance", "std"),
-        mean_time=("time", "mean"),
-    ).reset_index()
-
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
-    for algorithm, colour in palette.items():
-        part = summary[summary["algorithm"] == algorithm]
-        axes[0].errorbar(part["size"], part["mean_distance"],
-                         yerr=part["std_distance"], marker="o", capsize=4,
-                         label=algorithm, color=colour)
-        axes[1].plot(part["size"], part["mean_time"], marker="o",
-                     label=algorithm, color=colour)
-    axes[0].set_xlabel("Number of cities")
-    axes[0].set_ylabel("Mean tour length (± 1 SD)")
-    axes[0].set_title("Solution quality against problem size")
-    axes[0].legend()
-    axes[0].grid(alpha=0.3)
-    axes[1].set_xlabel("Number of cities")
-    axes[1].set_ylabel("Mean runtime (s, log scale)")
-    axes[1].set_yscale("log")
-    axes[1].set_title("Computational cost against problem size")
-    axes[1].legend()
-    axes[1].grid(alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(os.path.join(FIGURES, "fig2_scalability.png"), dpi=150)
-    plt.close(fig)
-
-    # Figure 3: convergence traces on the full instance.
-    rng = np.random.default_rng(MASTER_SEED)
-    hc_tour, hc_length, hc_history = hill_climb_random_restart(
-        dist, HC_RESTARTS, rng
+    significant = bool(p_value < alpha)
+    better = result_a.name if a.mean() < b.mean() else result_b.name
+    conclusion = (
+        f"The difference is statistically significant (p < {alpha}); "
+        f"{better} produces shorter tours on average."
+        if significant
+        else f"No statistically significant difference (p >= {alpha})."
     )
-    rng = np.random.default_rng(MASTER_SEED)
-    ga_tour, ga_length, ga_history = genetic_algorithm(dist, rng=rng,
-                                                       **GA_PARAMS)
 
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
-    axes[0].plot(hc_history, marker="o", markersize=3,
-                 color=palette["Hill Climbing"])
-    axes[0].set_xlabel("Accepted 2-opt move")
-    axes[0].set_ylabel("Tour length")
-    axes[0].set_title(f"Hill Climbing, best restart (final {hc_length:.1f})")
-    axes[0].grid(alpha=0.3)
-    axes[1].plot(ga_history, color=palette["Genetic Algorithm"])
-    axes[1].set_xlabel("Generation")
-    axes[1].set_ylabel("Best-so-far tour length")
-    axes[1].set_title(f"Genetic Algorithm (final {ga_length:.1f})")
-    axes[1].grid(alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(os.path.join(FIGURES, "fig3_convergence.png"), dpi=150)
-    plt.close(fig)
-
-    # Figure 4: the best tours themselves.
-    fig, axes = plt.subplots(1, 2, figsize=(11, 5.2))
-    for axis, tour, label, colour in (
-        (axes[0], hc_tour, "Hill Climbing", palette["Hill Climbing"]),
-        (axes[1], ga_tour, "Genetic Algorithm", palette["Genetic Algorithm"]),
-    ):
-        closed = list(tour) + [tour[0]]
-        axis.plot(coords[closed, 0], coords[closed, 1], "-", color=colour,
-                  linewidth=1.2)
-        axis.scatter(coords[:, 0], coords[:, 1], s=22, color="black", zorder=3)
-        axis.set_title(f"{label}: {tour_length(tour, dist):.1f}")
-        axis.set_xlabel("x")
-        axis.set_ylabel("y")
-        axis.grid(alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(os.path.join(FIGURES, "fig4_best_routes.png"), dpi=150)
-    plt.close(fig)
-
-    return {"hill_climbing": hc_tour, "genetic_algorithm": ga_tour}
+    return {
+        "test": test_name,
+        "p_value": float(p_value),
+        "significant": significant,
+        "mean_a": float(a.mean()),
+        "mean_b": float(b.mean()),
+        "conclusion": conclusion,
+    }
 
 
-def main():
-    """Run the full experimental pipeline and write all artefacts to disk."""
-    os.makedirs(RESULTS, exist_ok=True)
-    names, coords = load_cities(DATA)
-    dist = distance_matrix(coords)
-    print(f"Loaded {len(names)} cities from {DATA}\n")
+def scalability_study(
+    coords: np.ndarray,
+    algorithms: dict[str, tuple],
+    sizes: tuple[int, ...] = (10, 20, 30, 40, 50),
+    n_runs: int = 5,
+) -> pd.DataFrame:
+    """Measure quality and run time as the problem size grows.
 
-    print("Running scalability experiment...")
-    raw = run_scalability(coords)
-    raw.to_csv(os.path.join(RESULTS, "raw_results.csv"), index=False)
+    For each requested size the study uses the first ``size`` cities of
+    the dataset, then runs every algorithm ``n_runs`` times.
 
-    summary = raw.groupby(["size", "algorithm"]).agg(
-        mean_distance=("distance", "mean"),
-        std_distance=("distance", "std"),
-        best_distance=("distance", "min"),
-        mean_time=("time", "mean"),
-    ).round(3).reset_index()
-    summary.to_csv(os.path.join(RESULTS, "summary.csv"), index=False)
-    print("\n" + summary.to_string(index=False) + "\n")
+    Args:
+        coords: Full ``(n, 2)`` array of city coordinates.
+        algorithms: Mapping ``name -> (callable, kwargs_dict)``.
+        sizes: City counts to test.
+        n_runs: Repeats per algorithm per size.
 
-    print("Tuning the genetic algorithm...")
-    tuning = tune_genetic_algorithm(dist)
-    tuning.round(3).to_csv(os.path.join(RESULTS, "ga_tuning.csv"), index=False)
-    print("\n" + tuning.round(2).to_string(index=False) + "\n")
+    Returns:
+        A tidy :class:`pandas.DataFrame` with one row per
+        (size, algorithm) combination and columns for mean/std length
+        and mean time.
+    """
+    from .tsp import build_distance_matrix
 
-    print("Hypothesis tests on the 50-city instance...")
-    tests = hypothesis_tests(raw)
-    tests.to_csv(os.path.join(RESULTS, "hypothesis_tests.csv"), index=False)
-    print(tests.to_string(index=False) + "\n")
+    records = []
+    for size in sizes:
+        subset = coords[:size]
+        dist = build_distance_matrix(subset)
+        for name, (algorithm, kwargs) in algorithms.items():
+            result = run_repeated(
+                name, algorithm, dist, n_runs=n_runs, **kwargs
+            )
+            records.append(
+                {
+                    "cities": size,
+                    "algorithm": name,
+                    "mean_length": result.mean_length,
+                    "std_length": result.std_length,
+                    "mean_time_s": result.mean_time,
+                }
+            )
 
-    print("Generating figures...")
-    best = make_figures(raw, coords, dist, names)
-
-    for label, tour in best.items():
-        path = os.path.join(RESULTS, f"best_route_{label}.txt")
-        save_route(path, tour, names, dist)
-        print(f"  {label}: {tour_length(tour, dist):.2f} -> {path}")
-
-    overall = min(best.values(), key=lambda t: tour_length(t, dist))
-    save_route(os.path.join(RESULTS, "best_route.txt"), overall, names, dist)
-    print(f"\nShortest route found overall: {tour_length(overall, dist):.2f}")
-
-
-if __name__ == "__main__":
-    main()
+    return pd.DataFrame.from_records(records)
