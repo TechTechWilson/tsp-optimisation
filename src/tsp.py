@@ -3,21 +3,21 @@
 This module provides the problem-independent building blocks that every
 search algorithm in this project relies on:
 
-* loading city data from a CSV file (either coordinates or a distance
-  matrix),
+* loading city data from a CSV file,
 * pre-computing an (n x n) Euclidean distance matrix for fast lookups,
 * evaluating the total length of a closed tour,
-* generating random tours and standard neighbourhood moves, and
+* generating random tours and the 2-opt neighbourhood operator, and
 * plotting tours and convergence curves.
 
-Keeping these helpers in one place means the Simulated Annealing,
-Hill Climbing and Genetic Algorithm implementations all measure
-"fitness" in exactly the same way, which is essential for a fair
-comparison.
+The 2-opt delta formula ``D[a,c] + D[b,d] - D[a,b] - D[c,d]`` evaluates
+a candidate move in constant time (four table look-ups). All four search
+algorithms use this same operator, which is the central methodological
+claim of the project.
 """
 
 from __future__ import annotations
 
+import math
 import random
 from pathlib import Path
 
@@ -81,7 +81,8 @@ def build_distance_matrix(coords: np.ndarray) -> np.ndarray:
 
     Computing all pairwise distances once and then using cheap array
     look-ups inside the search loops is far faster than recomputing
-    distances on every iteration.
+    distances on every iteration.  The double-loop with ``math.sqrt``
+    reproduces the notebook's computation exactly.
 
     Args:
         coords: ``(n, 2)`` array of city coordinates.
@@ -90,9 +91,16 @@ def build_distance_matrix(coords: np.ndarray) -> np.ndarray:
         An ``(n, n)`` array where entry ``[i, j]`` is the distance
         between city ``i`` and city ``j``.
     """
-    # Vectorised pairwise distance using broadcasting.
-    diff = coords[:, np.newaxis, :] - coords[np.newaxis, :, :]
-    return np.sqrt((diff ** 2).sum(axis=-1))
+    n = len(coords)
+    D = np.zeros((n, n), dtype=float)
+    for i in range(n):
+        for j in range(i + 1, n):
+            dx = coords[i, 0] - coords[j, 0]
+            dy = coords[i, 1] - coords[j, 1]
+            d = math.sqrt(dx * dx + dy * dy)
+            D[i, j] = d
+            D[j, i] = d
+    return D
 
 
 # --------------------------------------------------------------------------- #
@@ -101,9 +109,11 @@ def build_distance_matrix(coords: np.ndarray) -> np.ndarray:
 def tour_length(tour: Tour, dist: np.ndarray) -> float:
     """Return the total length of a *closed* tour.
 
-    This is the objective function the whole project minimises: the
-    sum of the distances between consecutive cities, plus the distance
-    from the final city back to the start.
+    This is the objective function the whole project minimises: the sum
+    of the distances between consecutive cities, plus the distance from
+    the final city back to the start.  The explicit Python loop matches
+    the notebook's summation order exactly, which matters for
+    deterministic reproducibility of the GA.
 
     Args:
         tour: A permutation of city indices.
@@ -112,12 +122,11 @@ def tour_length(tour: Tour, dist: np.ndarray) -> float:
     Returns:
         The total Euclidean distance of the round trip.
     """
-    idx = np.asarray(tour)
-    # Distance of each leg city[i] -> city[i+1], vectorised.
-    legs = dist[idx[:-1], idx[1:]].sum()
-    # Closing leg: last city back to the first city.
-    closing = dist[idx[-1], idx[0]]
-    return float(legs + closing)
+    total = 0.0
+    n = len(tour)
+    for i in range(n):
+        total += dist[tour[i], tour[(i + 1) % n]]
+    return total
 
 
 def fitness(tour: Tour, dist: np.ndarray) -> float:
@@ -199,6 +208,82 @@ def two_opt_move(tour: Tour, rng: random.Random | None = None) -> Tour:
     i, j = sorted(rng.sample(range(len(tour)), 2))
     new_tour[i:j + 1] = reversed(new_tour[i:j + 1])
     return new_tour
+
+
+# --------------------------------------------------------------------------- #
+# Constant-time 2-opt evaluation  (the shared neighbourhood operator)
+# --------------------------------------------------------------------------- #
+def two_opt_delta(
+    route: Tour, i: int, j: int, D: np.ndarray,
+) -> float:
+    """Cost change from reversing ``route[i:j+1]``.  O(1) — four look-ups.
+
+    The central methodological claim of the project is that all four
+    algorithms use this identical operator, so any difference in solution
+    quality is attributable to search strategy rather than to one
+    algorithm being handed a better move.
+
+    Args:
+        route: Current tour (a permutation of city indices).
+        i: Start index of the segment to reverse.
+        j: End index (inclusive) of the segment to reverse.
+        D: ``(n, n)`` distance matrix.
+
+    Returns:
+        ``D[a,c] + D[b,d] - D[a,b] - D[c,d]`` — negative when the move
+        shortens the tour.
+    """
+    n = len(route)
+    a, b = route[i - 1], route[i]
+    c, d = route[j], route[(j + 1) % n]
+    if a == c or b == d:
+        return 0.0
+    return (D[a, c] + D[b, d]) - (D[a, b] + D[c, d])
+
+
+def two_opt_apply(route: Tour, i: int, j: int) -> Tour:
+    """Return a new tour with the segment ``route[i:j+1]`` reversed.
+
+    Args:
+        route: Current tour.
+        i: Start index of the segment.
+        j: End index (inclusive).
+
+    Returns:
+        A new list; the input is not modified.
+    """
+    return route[:i] + route[i:j + 1][::-1] + route[j + 1:]
+
+
+def two_opt_moves(n: int) -> list[tuple[int, int]]:
+    """Every valid ``(i, j)`` 2-opt move for a tour of ``n`` cities.
+
+    Args:
+        n: Number of cities.
+
+    Returns:
+        A list of ``(i, j)`` pairs with ``1 <= i < j < n``.
+    """
+    return [(i, j) for i in range(1, n - 1) for j in range(i + 1, n)]
+
+
+def random_route(n_cities: int, rng: np.random.Generator) -> Tour:
+    """Generate a random permutation using a NumPy generator.
+
+    This is the route-initialisation helper used by the notebook; it
+    accepts a ``numpy.random.Generator`` so that the same seed sequence
+    reproduces the notebook's results exactly.
+
+    Args:
+        n_cities: Number of cities.
+        rng: A seeded ``numpy.random.Generator``.
+
+    Returns:
+        A shuffled list of city indices ``0 .. n_cities - 1``.
+    """
+    route = list(range(n_cities))
+    rng.shuffle(route)
+    return route
 
 
 # --------------------------------------------------------------------------- #
