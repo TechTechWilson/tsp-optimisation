@@ -1,87 +1,75 @@
-"""Simulated Annealing (SA) for the Travelling Salesman Problem.
+"""Simulated Annealing for the Travelling Salesman Problem.
 
-Simulated Annealing is the single-solution (local search) metaheuristic
-chosen for this assessment. It is inspired by the cooling of metals:
+Simulated Annealing is a single-solution metaheuristic inspired by the
+cooling of metals. At high temperatures the search accepts worsening moves
+freely, allowing it to roam the landscape and escape local optima. As the
+temperature is reduced geometrically the acceptance probability of bad
+moves collapses and the search settles into refinement.
 
-* a high *temperature* makes the search willing to accept worse tours,
-  which lets it escape local optima (exploration);
-* as the temperature is slowly reduced by the *cooling schedule*, the
-  search accepts fewer bad moves and settles on refining good tours
-  (exploitation).
+The only difference from hill climbing is the Metropolis acceptance
+criterion: a worsening move is accepted with probability
+``exp(-delta / T)``.
 
-A worse move (one that lengthens the tour) is accepted with probability
-``exp(-delta / T)``, exactly as shown in the Week 7 lecture. Because TSP
-is a minimisation problem, ``delta = new_length - current_length`` and a
-*negative* delta is always an improvement.
+Parameters from the notebook sweep (Section 8):
+``T0 = 100``, ``alpha = 0.9998``, ``T_end = 1e-3``, 12 iterations per
+temperature level.
 """
 
 from __future__ import annotations
 
 import math
-import random
+import time
 
 import numpy as np
 
-from .tsp import Tour, random_tour, tour_length, two_opt_move
+from .tsp import Tour, random_route, tour_length, two_opt_apply, two_opt_delta
 
 
 def simulated_annealing(
-    dist: np.ndarray,
-    initial_temp: float = 1000.0,
-    min_temp: float = 1e-3,
-    cooling_rate: float = 0.995,
-    iters_per_temp: int = 100,
-    neighbour_fn=two_opt_move,
-    seed: int | None = None,
-) -> tuple[Tour, float, list[float]]:
-    """Solve a TSP instance with Simulated Annealing.
+    D: np.ndarray,
+    seed: int,
+    t_start: float = 100.0,
+    t_end: float = 1e-3,
+    alpha: float = 0.9998,
+    iters_per_temp: int = 12,
+) -> tuple[Tour, float, float, list[float]]:
+    """Metropolis acceptance with geometric cooling.
 
     Args:
-        dist: ``(n, n)`` distance matrix for the instance.
-        initial_temp: Starting temperature ``T0``. Higher values allow
-            more exploration early on.
-        min_temp: Temperature at which the search stops.
-        cooling_rate: Geometric cooling factor ``alpha`` in ``T = alpha * T``.
-            Values closer to 1.0 cool more slowly (better quality, slower).
-        iters_per_temp: Number of candidate moves tried at each
-            temperature level.
-        neighbour_fn: Function used to generate a neighbouring tour
-            (defaults to a 2-opt segment reversal).
-        seed: Optional random seed for reproducible runs.
+        D: ``(n, n)`` distance matrix.
+        seed: Integer seed for ``numpy.random.default_rng``.
+        t_start: Initial temperature ``T0`` (default 100.0).
+        t_end: Temperature at which the search stops.
+        alpha: Geometric cooling factor in ``T = alpha * T``.
+        iters_per_temp: Candidate moves tried at each temperature level.
 
     Returns:
-        A tuple ``(best_tour, best_length, history)`` where ``history``
-        is the best length recorded after each temperature level (useful
-        for plotting convergence).
+        ``(best_route, best_length, elapsed_seconds, history)`` where
+        ``history`` records the best length after each temperature step.
     """
-    rng = random.Random(seed)
-    n_cities = dist.shape[0]
+    rng = np.random.default_rng(seed)
+    n = D.shape[0]
+    t0 = time.perf_counter()
 
-    current = random_tour(n_cities, rng)
-    current_length = tour_length(current, dist)
+    route = random_route(n, rng)
+    length = tour_length(route, D)
+    best_route, best_len = list(route), length
 
-    best = current[:]
-    best_length = current_length
+    T = t_start
+    history: list[float] = [length]
 
-    history: list[float] = [best_length]
-    temperature = initial_temp
-
-    while temperature > min_temp:
+    while T > t_end:
         for _ in range(iters_per_temp):
-            candidate = neighbour_fn(current, rng)
-            candidate_length = tour_length(candidate, dist)
-            delta = candidate_length - current_length
+            i = int(rng.integers(1, n - 1))
+            j = int(rng.integers(i + 1, n))
+            delta = two_opt_delta(route, i, j, D)
 
-            # Accept improving moves outright; accept worsening moves
-            # with a temperature-dependent probability.
-            if delta < 0 or rng.random() < math.exp(-delta / temperature):
-                current = candidate
-                current_length = candidate_length
-                if current_length < best_length:
-                    best = current[:]
-                    best_length = current_length
+            if delta < 0 or rng.random() < math.exp(-delta / T):
+                route = two_opt_apply(route, i, j)
+                length += delta
+                if length < best_len:
+                    best_len, best_route = length, list(route)
+        history.append(best_len)
+        T *= alpha                                       # geometric cooling
 
-        history.append(best_length)
-        temperature *= cooling_rate  # Geometric cooling schedule.
-
-    return best, best_length, history
+    return best_route, best_len, time.perf_counter() - t0, history

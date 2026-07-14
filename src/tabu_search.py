@@ -1,125 +1,98 @@
 """Tabu Search for the Travelling Salesman Problem.
 
-Tabu Search is a single-member (local) search metaheuristic. Like Hill
-Climbing it holds one current solution and repeatedly moves to a
-neighbour, but it differs in two decisive ways:
+Tabu Search always moves to the best candidate available, **even when that
+move makes the tour worse**. What stops it immediately undoing that move is
+the tabu list: a recently used move is forbidden for ``tenure`` iterations.
 
-1. It moves to the *best* neighbour in a sampled neighbourhood **even if
-   that neighbour is worse** than the current tour. This is what lets it
-   walk out of a local optimum, whereas a hill climber simply stops.
-2. It keeps a short-term memory, the *tabu list*, of recently-performed
-   moves. Those moves are forbidden for a number of iterations (the
-   *tabu tenure*), which stops the search from immediately undoing the
-   move it has just made and cycling between the same two tours.
+The aspiration criterion overrides the ban when a forbidden move would
+yield a new global best — refusing a record-breaking tour on a
+technicality would be perverse.
 
-An *aspiration criterion* overrides the tabu status: if a forbidden move
-would produce a tour better than any found so far, it is allowed anyway.
-Without this the memory can block genuinely excellent moves.
+The neighbourhood is *sampled* rather than scanned in full, which keeps the
+per-iteration cost comparable to the other three algorithms.
 
-Design notes for this implementation
-------------------------------------
-* Move type: 2-opt segment reversal, the same neighbourhood used by
-  Simulated Annealing and Hill Climbing. Using an identical neighbourhood
-  across all three single-member algorithms means the comparison isolates
-  the *search strategy* rather than the move operator.
-* Tabu attribute: the unordered pair of city indices ``(i, j)`` whose
-  segment was reversed. Storing the move rather than the whole tour keeps
-  memory small and lookups fast.
-* Neighbourhood sampling: evaluating all n(n-1)/2 2-opt moves each
-  iteration is expensive. A random sample of candidate moves is scored
-  instead, which keeps the cost per iteration bounded and is standard
-  practice on larger instances.
+Parameters from the notebook: 1200 iterations, tabu tenure 15,
+neighbourhood sample size 260.
 """
 
 from __future__ import annotations
 
-import random
+import time
 
 import numpy as np
 
-from .tsp import Tour, random_tour, tour_length
+from .tsp import (
+    Tour,
+    random_route,
+    tour_length,
+    two_opt_apply,
+    two_opt_delta,
+    two_opt_moves,
+)
 
 
 def tabu_search(
-    dist: np.ndarray,
-    max_iterations: int = 2000,
-    tabu_tenure: int = 15,
-    neighbourhood_size: int = 60,
-    seed: int | None = None,
-) -> tuple[Tour, float, list[float]]:
-    """Solve a TSP instance with Tabu Search.
+    D: np.ndarray,
+    seed: int,
+    iterations: int = 1200,
+    tenure: int = 15,
+    sample_size: int = 260,
+) -> tuple[Tour, float, float, list[float]]:
+    """Best-of-neighbourhood search with short-term memory.
 
     Args:
-        dist: ``(n, n)`` distance matrix for the instance.
-        max_iterations: Number of search iterations to perform.
-        tabu_tenure: Number of iterations for which a move stays
-            forbidden. Small tenures risk cycling; very large tenures
-            over-restrict the search and starve it of good moves.
-        neighbourhood_size: Number of candidate 2-opt moves sampled and
-            scored per iteration.
-        seed: Optional random seed for reproducibility.
+        D: ``(n, n)`` distance matrix.
+        seed: Integer seed for ``numpy.random.default_rng``.
+        iterations: Search iterations (default 1200).
+        tenure: Tabu list length — a recently used move is forbidden for
+            this many iterations.
+        sample_size: Number of 2-opt moves sampled and scored per
+            iteration.
 
     Returns:
-        A tuple ``(best_tour, best_length, history)`` where ``history``
-        records the best length found so far at each iteration, so the
-        convergence curve can be plotted on the same axes as the other
-        algorithms.
+        ``(best_route, best_length, elapsed_seconds, history)`` where
+        ``history`` records the best length after each iteration.
     """
-    rng = random.Random(seed)
-    n = len(dist)
+    rng = np.random.default_rng(seed)
+    n = D.shape[0]
+    all_moves = two_opt_moves(n)
+    t0 = time.perf_counter()
 
-    current = random_tour(n, rng)
-    current_len = tour_length(current, dist)
+    route = random_route(n, rng)
+    length = tour_length(route, D)
+    best_route, best_len = list(route), length
 
-    best = current[:]
-    best_len = current_len
+    tabu: dict[tuple[int, int], int] = {}                # move -> iteration it expires
+    history: list[float] = [length]
 
-    # Maps a move (i, j) -> the iteration at which it stops being tabu.
-    tabu: dict[tuple[int, int], int] = {}
-    history: list[float] = [best_len]
+    for it in range(iterations):
+        idx = rng.choice(
+            len(all_moves),
+            size=min(sample_size, len(all_moves)),
+            replace=False,
+        )
+        cand_move, cand_delta = None, float("inf")
 
-    for iteration in range(max_iterations):
-        best_neighbour: Tour | None = None
-        best_neighbour_len = float("inf")
-        best_move: tuple[int, int] | None = None
+        for k in idx:
+            i, j = all_moves[k]
+            delta = two_opt_delta(route, i, j, D)
+            is_tabu = tabu.get((i, j), 0) > it
+            aspires = (length + delta) < best_len - 1e-12
 
-        # Score a random sample of 2-opt moves from the neighbourhood.
-        for _ in range(neighbourhood_size):
-            i, j = sorted(rng.sample(range(n), 2))
-            if j - i < 1:
+            if is_tabu and not aspires:                   # forbidden, and not special
                 continue
+            if delta < cand_delta:
+                cand_move, cand_delta = (i, j), delta
 
-            candidate = current[:i] + current[i:j + 1][::-1] + current[j + 1:]
-            candidate_len = tour_length(candidate, dist)
-
-            move = (i, j)
-            is_tabu = tabu.get(move, 0) > iteration
-
-            # Aspiration: allow a tabu move if it beats the global best.
-            if is_tabu and candidate_len >= best_len:
-                continue
-
-            if candidate_len < best_neighbour_len:
-                best_neighbour = candidate
-                best_neighbour_len = candidate_len
-                best_move = move
-
-        # Every sampled move was tabu; carry on and let the list expire.
-        if best_neighbour is None:
-            history.append(best_len)
+        if cand_move is None:                             # everything was tabu
             continue
 
-        # Move to the best admissible neighbour even if it is worse than
-        # the current tour. This is the escape mechanism.
-        current = best_neighbour
-        current_len = best_neighbour_len
-        if best_move is not None:
-            tabu[best_move] = iteration + tabu_tenure
+        route = two_opt_apply(route, *cand_move)
+        length += cand_delta
+        tabu[cand_move] = it + tenure                     # serve your sentence
 
-        if current_len < best_len:
-            best = current[:]
-            best_len = current_len
-
+        if length < best_len:
+            best_len, best_route = length, list(route)
         history.append(best_len)
 
-    return best, best_len, history
+    return best_route, best_len, time.perf_counter() - t0, history
