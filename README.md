@@ -1,36 +1,61 @@
-# Travelling Salesman Problem: Hill Climbing vs Genetic Algorithm
+# Travelling Salesman Problem: Four Search Strategies, One Neighbourhood
 
-A comparative study of a single-solution search algorithm and a population-based
-evolutionary algorithm on a 50-city Euclidean instance of the Travelling
-Salesman Problem (TSP).
+A comparative study of four metaheuristic search algorithms on a 50-city
+Euclidean instance of the Travelling Salesman Problem (TSP).
+
+| Family | Algorithm | Role |
+|---|---|---|
+| Single-solution | **Hill Climbing** with random restarts | Baseline — no escape mechanism beyond restarting |
+| Single-solution | **Simulated Annealing** | Probabilistic escape from local optima |
+| Single-solution | **Tabu Search** | Memory-based escape from local optima |
+| Population-based | **Genetic Algorithm** | Evolutionary search with permutation operators |
 
 Submitted for **UFCEL1-15-M — AI for Search and Optimisation**, UWE Bristol.
 
 ---
 
-## Overview
+## The central methodological claim
 
-The TSP asks for the shortest closed tour that visits each of *n* cities exactly
-once and returns to the origin. It is NP-hard, so exact methods become
-intractable quickly and heuristic search is the practical route to good tours.
+All four algorithms search the **same 2-opt neighbourhood**. A 2-opt move
+reverses a contiguous segment of the tour, and its effect on tour length is
+evaluated in constant time by the formula
 
-This repository implements and compares:
+$$\Delta = D[a,c] + D[b,d] - D[a,b] - D[c,d]$$
 
-| Algorithm | Family | Key operators |
-|---|---|---|
-| **Hill Climbing with Random Restarts** | Single-solution local search | Steepest ascent, 2-opt neighbourhood, 20 random restarts |
-| **Genetic Algorithm** | Population-based evolutionary search | Tournament selection, order crossover (OX1), inversion mutation, elitism |
+— four table look-ups, no tour re-scan. The GA's inversion mutation *is* a
+2-opt move applied blindly, which keeps the GA inside the same landscape as
+the other three. Any difference in performance is therefore attributable to
+**search strategy**, not to one algorithm being handed a better move
+operator.
 
-Both algorithms are written from first principles. No third-party TSP solver,
-optimisation library or metaheuristic framework is used anywhere in this code.
-NumPy is used only for array storage and vectorised arithmetic, SciPy only for
-the statistical tests, pandas and matplotlib only for tabulating and plotting
-results.
+Every algorithm is written from first principles. No third-party TSP
+solver, optimisation library, or metaheuristic framework is used. NumPy
+stores arrays and draws random numbers; SciPy runs the statistical tests;
+pandas and matplotlib tabulate and plot results.
 
-Both algorithms search the **same 2-opt move landscape** (the GA's inversion
-mutation is a 2-opt move applied at random), so any difference in performance is
-attributable to the search strategy rather than to one algorithm being handed a
-better move operator.
+---
+
+## Results
+
+30 independent runs per algorithm on the 50-city instance. Run *r* uses
+seed *r* for all four algorithms, so the comparison is paired.
+
+| Algorithm | Mean | SD | Best | Worst | Mean time |
+|---|---|---|---|---|---|
+| Hill Climbing | 566.34 | 5.83 | 559.87 | 578.68 | 0.41 s |
+| Simulated Annealing | 571.41 | 5.64 | 559.87 | 585.82 | 1.37 s |
+| Tabu Search | 568.71 | 6.21 | 559.87 | 580.23 | 0.16 s |
+| Genetic Algorithm | 594.07 | 18.63 | 559.87 | 634.22 | 0.50 s |
+
+**Key findings:**
+
+- All four algorithms reach the same best tour (559.87).
+- The three local-search methods are statistically indistinguishable from
+  each other (HC vs SA: *p* = 1.12 × 10⁻³; HC vs Tabu: *p* = 0.13).
+- Every local-search method beats the GA with a large effect size
+  (*p* < 10⁻⁶, Cohen's *d* > 1.5 in all cases).
+- Tabu Search is the best value for money: it matches Hill Climbing quality
+  at roughly 40% of its runtime.
 
 ---
 
@@ -39,16 +64,22 @@ better move operator.
 ```
 .
 ├── data/
-│   └── cities.csv                  # 50 city coordinates (provided instance)
+│   └── cities.csv                       # 50 city coordinates
 ├── src/
-│   ├── tsp_core.py                 # Data loading, distance matrix, tour evaluation, 2-opt
-│   ├── hill_climbing.py            # Steepest-ascent hill climber with random restarts
-│   ├── genetic.py                  # Genetic algorithm and all its operators
-│   └── experiments.py              # Full experimental pipeline
+│   ├── tsp.py                           # Data loading, distance matrix, 2-opt delta
+│   ├── hill_climbing.py                 # Steepest-ascent with random restarts
+│   ├── simulated_annealing.py           # Metropolis acceptance, geometric cooling
+│   ├── tabu_search.py                   # Best-of-neighbourhood with short-term memory
+│   ├── genetic_algorithm.py             # Tournament selection, OX1, inversion mutation
+│   └── experiments.py                   # Helper classes for repeated runs
+├── tests/
+│   └── test_tsp.py                      # 16 tests: validity, determinism, delta correctness
 ├── notebooks/
-│   └── tsp_analysis.ipynb          # Narrated walkthrough of the same experiments
-├── results/                        # Generated: CSVs of every run, tests, best route
-├── figures/                        # Generated: all figures used in the report
+│   └── TSP_Coursework.ipynb             # Narrated walkthrough — single source of truth
+├── results/                             # Generated CSV tables and best_route.txt
+├── figures/                             # Generated plots
+├── demo.py                              # One-shot reproduction of all results & figures
+├── tune_ga.py                           # GA hyperparameter sweep
 ├── requirements.txt
 └── README.md
 ```
@@ -60,12 +91,11 @@ better move operator.
 Python 3.10 or newer.
 
 ```bash
-git clone <your-repo-url>
-cd <repo>
+git clone https://github.com/TechTechWilson/tsp-optimisation.git
+cd tsp-optimisation
 
 python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
@@ -76,98 +106,82 @@ pip install -r requirements.txt
 ### Reproduce every result and figure
 
 ```bash
-cd src
-python experiments.py
+python demo.py
 ```
 
-This runs both algorithms 30 times at each of 10, 20, 30, 40 and 50 cities,
-performs the GA hyperparameter sweep, runs the hypothesis tests, writes the
-figures and records the best route found. It takes roughly six minutes on a
-standard laptop. All randomness is seeded from a single master seed
-(`MASTER_SEED = 42` in `experiments.py`), so results are reproducible exactly.
+This runs all four algorithms 30 times each on the 50-city instance,
+performs the six pairwise hypothesis tests, runs the GA hyperparameter
+sweep, and writes all CSVs and figures. It takes about two minutes on a
+standard laptop. All randomness is seeded from `RANDOM_SEED = 42`, so
+results reproduce exactly.
 
-### Outputs
+### Run the tests
 
-| File | Contents |
-|---|---|
-| `results/raw_results.csv` | Tour length and runtime for every individual run |
-| `results/summary.csv` | Mean, standard deviation, best and mean runtime per size |
-| `results/ga_tuning.csv` | Hyperparameter sweep results |
-| `results/hypothesis_tests.csv` | Welch t-test and Mann-Whitney U results |
-| `results/best_route.txt` | The shortest tour found, as an ordered city sequence |
-| `figures/*.png` | Box plots, scalability curves, convergence traces, route plots |
+```bash
+pytest tests/ -v
+```
 
-### Solve the instance once and print the tour length
+16 tests covering: distance matrix properties, tour-length arithmetic,
+2-opt delta correctness against full recomputation, tour validity for every
+algorithm, improvement over random starts, and determinism (same seed →
+same tour).
 
-```python
-import sys
-sys.path.insert(0, "src")
+### Code quality
 
-import numpy as np
-from tsp_core import load_cities, distance_matrix, save_route
-from hill_climbing import hill_climb_random_restart
-
-names, coords = load_cities("data/cities.csv")
-dist = distance_matrix(coords)
-
-tour, length, _ = hill_climb_random_restart(
-    dist, restarts=20, rng=np.random.default_rng(42)
-)
-print(f"Shortest route found: {length:.2f}")
-save_route("results/best_route.txt", tour, names, dist)
+```bash
+flake8 src tests --max-line-length 88
 ```
 
 ### Notebook
 
-`notebooks/tsp_analysis.ipynb` walks through the same experiments with the
-reasoning made explicit at each step. Launch with:
+The notebook `notebooks/TSP_Coursework.ipynb` walks through the same
+experiments with the reasoning made explicit at each step. It is the single
+source of truth for this project; `src/` and `demo.py` are faithful
+extractions of it.
 
-```bash
-jupyter notebook notebooks/tsp_analysis.ipynb
-```
+**Video demonstration:** <unlisted YouTube link>
 
 ---
 
 ## Data
 
-`data/cities.csv` is the instance supplied with the assessment. It contains 50
-rows with columns `City, X, Y`. The coordinates are synthetic: they were drawn
-from a uniform distribution on `[0, 100]²` with a fixed seed, which is why the
-first values reproduce exactly the standard NumPy seed-42 uniform sequence. The
-file therefore contains no personal data and no third-party copyrighted content.
-The licensing and ethical position is discussed in full in the technical report.
+`data/cities.csv` is the instance supplied with the assessment. It contains
+50 rows with columns `City, X, Y`. The coordinates are synthetic, drawn
+from a uniform distribution on [0, 100]² with a fixed seed. The file
+contains no personal data and no third-party copyrighted content. The
+licensing and ethical position is discussed in full in the technical report.
 
 ---
 
-## Code standards
+## Dependencies
 
-* PEP 8 throughout (verified with `flake8`).
-* Google-style docstrings on every module, function and class.
-* Input validation with explicit exceptions in `tsp_core.load_cities` and
-  `genetic.genetic_algorithm`.
+| Package | Version | Licence | Used for |
+|---|---|---|---|
+| numpy | ≥1.26 | BSD-3-Clause | Array storage, random number generation |
+| scipy | ≥1.11 | BSD-3-Clause | Welch's t-test, Mann-Whitney U |
+| pandas | ≥2.1 | BSD-3-Clause | Tabular data, CSV I/O |
+| matplotlib | ≥3.8 | PSF-based | Plotting |
+| seaborn | ≥0.12 | BSD-3-Clause | Box plots |
+| pytest | ≥7.0 | MIT | Test runner (dev only) |
+| flake8 | ≥7.0 | MIT | Linting (dev only) |
 
-To check:
-
-```bash
-pip install flake8
-flake8 src --max-line-length 88
-```
+All algorithms are original work. No code has been adapted from third-party
+TSP solvers, optimisation frameworks, or AI-generated sources.
 
 ---
 
 ## References
 
-1. Alanzi, E. and Menai, M.E.B. (2025) 'Solving the travelling salesman problem
-   with machine learning: a review of recent advances and challenges',
-   *Artificial Intelligence Review*, 58(9), p. 267.
-2. Mamatova, Z. and Abdumajidova, M. (2025) 'The travelling salesman problem:
-   mathematical modeling and optimal solutions', *International Journal of
-   Artificial Intelligence*, 1(3), pp. 1204–1212.
-3. Croes, G.A. (1958) 'A method for solving traveling-salesman problems',
+1. Croes, G.A. (1958) 'A method for solving traveling-salesman problems',
    *Operations Research*, 6(6), pp. 791–812.
-4. Davis, L. (1985) 'Applying adaptive algorithms to epistatic domains', in
+2. Davis, L. (1985) 'Applying adaptive algorithms to epistatic domains', in
    *Proceedings of the 9th International Joint Conference on Artificial
    Intelligence*, pp. 162–164.
-5. Johnson, D.S. and McGeoch, L.A. (1997) 'The traveling salesman problem: a
-   case study in local optimization', in Aarts, E. and Lenstra, J.K. (eds)
-   *Local Search in Combinatorial Optimization*. Chichester: Wiley, pp. 215–310.
+3. Glover, F. (1989) 'Tabu search — Part I', *ORSA Journal on Computing*,
+   1(3), pp. 190–206.
+4. Johnson, D.S. and McGeoch, L.A. (1997) 'The traveling salesman problem:
+   a case study in local optimization', in Aarts, E. and Lenstra, J.K. (eds)
+   *Local Search in Combinatorial Optimization*. Chichester: Wiley,
+   pp. 215–310.
+5. Kirkpatrick, S., Gelatt, C.D. and Vecchi, M.P. (1983) 'Optimization by
+   simulated annealing', *Science*, 220(4598), pp. 671–680.
