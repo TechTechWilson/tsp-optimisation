@@ -1,4 +1,7 @@
-test,statistic,p_value,effect_size_d
-Welch t-test (tour length),-8.838541656553259,1.844421971534955e-10,-2.2821016427060856
-Mann-Whitney U (tour length),19.5,2.039150815936608e-10,
-Welch t-test (runtime),-98.64142426306692,3.239344196454016e-38,-25.469106227802563
+comparison,t,p_value,cohens_d,reject_H0_at_0.05
+Hill Climbing vs Simulated Annealing,-3.43,1.12e-03,-0.89,Yes
+Hill Climbing vs Tabu Search,-1.53,1.32e-01,-0.39,No
+Hill Climbing vs Genetic Algorithm,-7.782,4.15e-09,-2.01,Yes
+Simulated Annealing vs Tabu Search,1.762,8.33e-02,0.46,No
+Simulated Annealing vs Genetic Algorithm,-6.375,2.72e-07,-1.65,Yes
+Tabu Search vs Genetic Algorithm,-7.072,2.92e-08,-1.83,Yes

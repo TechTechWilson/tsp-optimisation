@@ -1,196 +1,264 @@
-"""End-to-end demonstration: run, compare and visualise all algorithms.
+"""Reproduce every result and figure from the TSP coursework notebook.
 
-This script reproduces every result and figure referenced in the report.
-Run it from the project root with ``python demo.py``. All outputs are
-written to the ``results/`` directory.
+Four algorithms are compared on a 50-city Euclidean TSP using 30 paired
+runs per algorithm (run ``r`` uses seed ``42 + r`` for all four, so the
+comparison is paired rather than a race between different random draws).
 
-Four algorithms are compared:
+Usage::
 
-* Hill Climbing       - single-member baseline (improving moves only)
-* Simulated Annealing - single-member, escapes local optima probabilistically
-* Tabu Search         - single-member, escapes local optima using memory
-* Genetic Algorithm   - population-based evolutionary algorithm
+    python demo.py          # writes results/ and figures/
 
-All three single-member algorithms use the same 2-opt neighbourhood, so a
-difference between them is attributable to the search strategy rather than
-to the move operator.
+The notebook ``TSP_Coursework.ipynb`` is the single source of truth; this
+script is a faithful extraction of its experiment loop.
 """
 
-import time
-
 import matplotlib
-
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
 
-from src.experiments import (  # noqa: E402
-    run_repeated,
-    scalability_study,
-    statistical_comparison,
-)
-from src.genetic_algorithm import genetic_algorithm  # noqa: E402
-from src.hill_climbing import hill_climbing  # noqa: E402
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np               # noqa: E402
+import pandas as pd              # noqa: E402
+import seaborn as sns            # noqa: E402
+from scipy import stats          # noqa: E402
+
+from src.genetic_algorithm import genetic_algorithm   # noqa: E402
+from src.hill_climbing import hill_climbing            # noqa: E402
 from src.simulated_annealing import simulated_annealing  # noqa: E402
-from src.tabu_search import tabu_search  # noqa: E402
-from src.tsp import (  # noqa: E402
+from src.tabu_search import tabu_search                # noqa: E402
+from src.tsp import (                                  # noqa: E402
     build_distance_matrix,
     load_cities,
-    plot_convergence,
-    plot_tour,
+    tour_length,
     write_route,
 )
 
-# Repeats for the head-to-head comparison. 30 is standard practice for
-# benchmarking stochastic algorithms.
+sns.set(style="whitegrid")
+plt.rcParams["figure.dpi"] = 120
+
+RANDOM_SEED = 42
 N_RUNS = 30
-SCALE_RUNS = 3        # Repeats per size in the scalability study.
+
+ORDER = ["Hill Climbing", "Simulated Annealing", "Tabu Search", "Genetic Algorithm"]
+PALETTE = dict(zip(ORDER, ["#4C72B0", "#DD8452", "#55A868", "#C44E52"]))
+
+ALGORITHMS = {
+    "Hill Climbing": hill_climbing,
+    "Simulated Annealing": simulated_annealing,
+    "Tabu Search": tabu_search,
+    "Genetic Algorithm": genetic_algorithm,
+}
 
 # --------------------------------------------------------------------------- #
 # 1. Load the problem
 # --------------------------------------------------------------------------- #
 coords = load_cities("data/cities.csv")
-dist = build_distance_matrix(coords)
+D = build_distance_matrix(coords)
 print(f"Loaded {len(coords)} cities.\n")
 
 # --------------------------------------------------------------------------- #
-# 2. Single demonstration run of each algorithm on all 50 cities
+# 2. Paired experiment: 4 algorithms x 30 runs
 # --------------------------------------------------------------------------- #
-print("Single-run demonstration (50 cities)")
-print("-" * 44)
+rows, curves, tours, best_overall = [], {}, {}, (None, float("inf"))
 
-t0 = time.perf_counter()
-hc_tour, hc_len, hc_hist = hill_climbing(dist, seed=0)
-print(f"Hill Climbing       : {hc_len:8.2f}  ({time.perf_counter()-t0:.2f}s)")
+for name, fn in ALGORITHMS.items():
+    print(f"{name:<22}", end=" ", flush=True)
+    for run in range(N_RUNS):
+        route, length, secs, hist = fn(D, seed=RANDOM_SEED + run)
+        assert sorted(route) == list(range(len(coords))), "invalid tour!"
+        rows.append(
+            {"algorithm": name, "run": run, "distance": length, "time": secs}
+        )
+        if run == 0:
+            curves[name], tours[name] = hist, route
+        if length < best_overall[1]:
+            best_overall = (route, length)
+    print("done")
 
-t0 = time.perf_counter()
-sa_tour, sa_len, sa_hist = simulated_annealing(dist, seed=0)
-print(f"Simulated Annealing : {sa_len:8.2f}  ({time.perf_counter()-t0:.2f}s)")
+df = pd.DataFrame(rows)
 
-t0 = time.perf_counter()
-ts_tour, ts_len, ts_hist = tabu_search(dist, seed=0)
-print(f"Tabu Search         : {ts_len:8.2f}  ({time.perf_counter()-t0:.2f}s)")
-
-t0 = time.perf_counter()
-ga_tour, ga_len, ga_hist = genetic_algorithm(dist, seed=0)
-print(f"Genetic Algorithm   : {ga_len:8.2f}  ({time.perf_counter()-t0:.2f}s)")
-
-# The best route and the route plots are written *after* the repeated
-# runs below, so that they record the true best tour found across the
-# whole study rather than the single seed=0 demonstration run.
-
-# Convergence comparison.
-plot_convergence(
-    {
-        "Hill Climbing": hc_hist,
-        "Simulated Annealing": sa_hist,
-        "Tabu Search": ts_hist,
-        "Genetic Algorithm": ga_hist,
-    },
-    title="Convergence on 50-city TSP",
-    save_path="results/convergence.png",
+# --------------------------------------------------------------------------- #
+# 3. Summary table
+# --------------------------------------------------------------------------- #
+summary = (
+    df.groupby("algorithm")
+    .agg(
+        mean_distance=("distance", "mean"),
+        std_distance=("distance", "std"),
+        best_distance=("distance", "min"),
+        worst_distance=("distance", "max"),
+        mean_time=("time", "mean"),
+    )
+    .round(3)
+    .loc[ORDER]
 )
+print("\nSummary (30 runs, 50 cities)")
+print(summary.to_string())
+
+summary.to_csv("results/summary.csv")
+df.to_csv("results/raw_results.csv", index=False)
+print("\nWrote results/summary.csv  results/raw_results.csv")
+
 
 # --------------------------------------------------------------------------- #
-# 3. Repeated runs + statistical hypothesis tests (50 cities)
+# 4. Hypothesis tests  (all six pairwise)
 # --------------------------------------------------------------------------- #
-print("\nRepeated runs for statistical comparison")
-print("-" * 44)
-hc_res = run_repeated("Hill Climbing", hill_climbing, dist, n_runs=N_RUNS)
-sa_res = run_repeated("Simulated Annealing", simulated_annealing, dist,
-                      n_runs=N_RUNS)
-ts_res = run_repeated("Tabu Search", tabu_search, dist, n_runs=N_RUNS)
-ga_res = run_repeated("Genetic Algorithm", genetic_algorithm, dist,
-                      n_runs=N_RUNS)
+def _get(name):
+    return df[df.algorithm == name].distance.values
 
-for res in (hc_res, sa_res, ts_res, ga_res):
-    print(f"{res.name:20s}: mean={res.mean_length:8.2f}  "
-          f"std={res.std_length:6.2f}  mean_time={res.mean_time:.3f}s")
 
-# Record the best overall route across ALL repeated runs (brief
-# requirement). RunResult.best_tour already holds the best tour each
-# algorithm found over its repeats, so the study-wide best is simply the
-# shortest of those four. Writing it here (rather than from the single
-# seed=0 demonstration) guarantees the recorded best is never worse than
-# any per-algorithm mean reported in the results table.
-best_res = min((hc_res, sa_res, ts_res, ga_res), key=lambda r: min(r.lengths))
-print(f"\nShortest distance found (best of {N_RUNS} runs each): "
-      f"{min(best_res.lengths):.4f}  [{best_res.name}]")
-write_route(best_res.best_tour, dist, "results/best_route.txt")
+pairs = [
+    ("Hill Climbing", "Simulated Annealing"),
+    ("Hill Climbing", "Tabu Search"),
+    ("Hill Climbing", "Genetic Algorithm"),
+    ("Simulated Annealing", "Tabu Search"),
+    ("Simulated Annealing", "Genetic Algorithm"),
+    ("Tabu Search", "Genetic Algorithm"),
+]
 
-# Route plots use each algorithm's best tour across all repeats, so the
-# figures are consistent with the tour lengths reported in the tables.
-plot_tour(sa_res.best_tour, coords, dist, "Simulated Annealing best tour",
-          "results/route_sa.png")
-plot_tour(ga_res.best_tour, coords, dist, "Genetic Algorithm best tour",
-          "results/route_ga.png")
-plot_tour(ts_res.best_tour, coords, dist, "Tabu Search best tour",
-          "results/route_tabu.png")
+tests = []
+for a, b in pairs:
+    x, y = _get(a), _get(b)
+    t_stat, p = stats.ttest_ind(x, y, equal_var=False)
+    d = (x.mean() - y.mean()) / np.sqrt((x.var(ddof=1) + y.var(ddof=1)) / 2)
+    tests.append(
+        {
+            "comparison": f"{a} vs {b}",
+            "t": round(t_stat, 3),
+            "p_value": f"{p:.2e}",
+            "cohens_d": round(d, 2),
+            "reject_H0_at_0.05": "Yes" if p < 0.05 else "No",
+        }
+    )
 
-# Primary test required by the brief: single-member vs evolutionary.
-print("\nHypothesis test 1 - Simulated Annealing vs Genetic Algorithm")
-test_sa_ga = statistical_comparison(sa_res, ga_res)
-print(f"  {test_sa_ga['test']}: p = {test_sa_ga['p_value']:.4g}")
-print(f"  {test_sa_ga['conclusion']}")
+hyp_df = pd.DataFrame(tests)
+hyp_df.to_csv("results/hypothesis_tests.csv", index=False)
+print("Wrote results/hypothesis_tests.csv")
 
-# Secondary test: the two memory-based single-member algorithms.
-print("\nHypothesis test 2 - Simulated Annealing vs Tabu Search")
-test_sa_ts = statistical_comparison(sa_res, ts_res)
-print(f"  {test_sa_ts['test']}: p = {test_sa_ts['p_value']:.4g}")
-print(f"  {test_sa_ts['conclusion']}")
+# --------------------------------------------------------------------------- #
+# 5. Best route  (external file — assessment requirement)
+# --------------------------------------------------------------------------- #
+best_route, best_len = best_overall
+write_route(best_route, D, "results/best_route.txt")
+print(f"Wrote results/best_route.txt  (length = {best_len:.4f})")
 
-# Box plot of solution quality across repeats.
-plt.figure(figsize=(8, 5))
-plt.boxplot(
-    [hc_res.lengths, sa_res.lengths, ts_res.lengths, ga_res.lengths],
-    tick_labels=["Hill\nClimbing", "Simulated\nAnnealing", "Tabu\nSearch",
-                 "Genetic\nAlgorithm"],
+# --------------------------------------------------------------------------- #
+# 6. Figures
+# --------------------------------------------------------------------------- #
+# 6a. Boxplot: tour length distribution
+plt.figure(figsize=(9, 5))
+sns.boxplot(
+    data=df, x="algorithm", y="distance", order=ORDER,
+    hue="algorithm", palette=PALETTE, legend=False,
 )
-plt.ylabel("Best tour length")
-plt.title(f"Distribution of best tour over {N_RUNS} runs (50 cities)")
-plt.grid(alpha=0.3)
+sns.stripplot(
+    data=df, x="algorithm", y="distance", order=ORDER,
+    color="0.25", size=3, alpha=0.6,
+)
+plt.title("Tour length across 30 runs (lower is better)")
+plt.ylabel("Tour length")
+plt.xlabel("")
+plt.xticks(rotation=12)
 plt.tight_layout()
-plt.savefig("results/boxplot_quality.png", dpi=130)
+plt.savefig("figures/boxplot_quality.png", dpi=130)
 plt.close()
+
+# 6b. Boxplot: runtime
+plt.figure(figsize=(9, 5))
+sns.boxplot(
+    data=df, x="algorithm", y="time", order=ORDER,
+    hue="algorithm", palette=PALETTE, legend=False,
+)
+plt.title("Runtime across 30 runs")
+plt.ylabel("Seconds")
+plt.xlabel("")
+plt.xticks(rotation=12)
+plt.tight_layout()
+plt.savefig("figures/boxplot_runtime.png", dpi=130)
+plt.close()
+
+# 6c. Convergence (run 0)
+plt.figure(figsize=(9, 5))
+for name in ORDER:
+    h = curves[name]
+    plt.plot(
+        np.linspace(0, 100, len(h)), h,
+        label=name, color=PALETTE[name], lw=1.8,
+    )
+plt.xlabel("Search progress (% of budget)")
+plt.ylabel("Best tour found so far")
+plt.title("Convergence behaviour (run 0)")
+plt.ylim(540, 900)
+plt.legend()
+plt.tight_layout()
+plt.savefig("figures/convergence.png", dpi=130)
+plt.close()
+
+# 6d. Best-route plot for each algorithm (run 0)
+fig, axes = plt.subplots(2, 2, figsize=(10, 9))
+for ax, name in zip(axes.ravel(), ORDER):
+    r = tours[name] + [tours[name][0]]
+    pts = coords[r]
+    ax.plot(pts[:, 0], pts[:, 1], "-o", ms=4, lw=1.2, color=PALETTE[name])
+    ax.set_title(f"{name}\n{tour_length(tours[name], D):.2f}", fontsize=10)
+    ax.set_xticks([])
+    ax.set_yticks([])
+plt.suptitle("Best tour from each algorithm (run 0)")
+plt.tight_layout()
+plt.savefig("figures/best_routes.png", dpi=130)
+plt.close()
+
+# 6e. Quality against cost
+agg = df.groupby("algorithm").agg(
+    m=("distance", "mean"), s=("distance", "std"), t=("time", "mean")
+).loc[ORDER]
+plt.figure(figsize=(8, 5.5))
+for name in ORDER:
+    plt.errorbar(
+        agg.loc[name, "t"], agg.loc[name, "m"], yerr=agg.loc[name, "s"],
+        fmt="o", ms=11, capsize=5, color=PALETTE[name],
+    )
+    plt.annotate(
+        name, (agg.loc[name, "t"], agg.loc[name, "m"]),
+        textcoords="offset points", xytext=(10, 8), fontsize=9,
+    )
+plt.xlabel("Mean runtime (s)")
+plt.ylabel("Mean tour length (± 1 SD)")
+plt.title("Quality against cost")
+plt.tight_layout()
+plt.savefig("figures/quality_vs_cost.png", dpi=130)
+plt.close()
+
+print("Wrote figures/  (5 files)")
 
 # --------------------------------------------------------------------------- #
-# 4. Scalability study (10..50 cities)
+# 7. GA hyperparameter sweep  (re-run with notebook's GA config)
 # --------------------------------------------------------------------------- #
-print("\nScalability study (10-50 cities)")
-print("-" * 44)
-algorithms = {
-    "Hill Climbing": (hill_climbing, {}),
-    "Simulated Annealing": (simulated_annealing, {"cooling_rate": 0.99}),
-    "Tabu Search": (tabu_search, {"max_iterations": 1000}),
-    "Genetic Algorithm": (genetic_algorithm, {"generations": 250}),
-}
-table = scalability_study(coords, algorithms, n_runs=SCALE_RUNS)
-table.to_csv("results/scalability.csv", index=False)
-print(table.to_string(index=False))
+print("\nGA parameter sweep ...")
+tune_rows = []
+for ts in [2, 5, 7, 9]:
+    for mr in [0.05, 0.2, 0.5]:
+        lengths = []
+        for run in range(5):
+            _, length, _, _ = genetic_algorithm(
+                D, seed=RANDOM_SEED + run,
+                pop_size=100, generations=260,
+                mutation_rate=mr, tournament_k=ts, elitism=5,
+            )
+            lengths.append(length)
+        tune_rows.append(
+            {
+                "tournament_size": ts,
+                "mutation_rate": mr,
+                "mean_distance": round(np.mean(lengths), 3),
+                "std_distance": round(np.std(lengths), 3),
+            }
+        )
+        print(
+            f"  k={ts}  mut={mr:.2f}  "
+            f"mean={np.mean(lengths):.2f}  std={np.std(lengths):.2f}"
+        )
 
-# Quality vs size.
-plt.figure(figsize=(8, 5))
-for name, group in table.groupby("algorithm"):
-    plt.plot(group["cities"], group["mean_length"], "-o", label=name)
-plt.xlabel("Number of cities")
-plt.ylabel("Mean best tour length")
-plt.title("Solution quality vs problem size")
-plt.legend()
-plt.grid(alpha=0.3)
-plt.tight_layout()
-plt.savefig("results/scalability_quality.png", dpi=130)
-plt.close()
+pd.DataFrame(tune_rows).to_csv("results/ga_tuning.csv", index=False)
+print("Wrote results/ga_tuning.csv")
 
-# Run time vs size.
-plt.figure(figsize=(8, 5))
-for name, group in table.groupby("algorithm"):
-    plt.plot(group["cities"], group["mean_time_s"], "-o", label=name)
-plt.xlabel("Number of cities")
-plt.ylabel("Mean run time (s)")
-plt.title("Computational cost vs problem size")
-plt.legend()
-plt.grid(alpha=0.3)
-plt.tight_layout()
-plt.savefig("results/scalability_time.png", dpi=130)
-plt.close()
-
-print("\nAll figures and result files written to results/.")
+print("\nDone. All results in results/  All figures in figures/")
