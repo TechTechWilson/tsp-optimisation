@@ -33,6 +33,11 @@ solver, optimisation library, or metaheuristic framework is used. NumPy
 stores arrays and draws random numbers; SciPy runs the statistical tests;
 pandas and matplotlib tabulate and plot results.
 
+## Video demonstration
+
+A walkthrough of the implementation and results:
+**[Watch the demonstration](<PASTE_UNLISTED_YOUTUBE_LINK_HERE>)**
+
 ---
 
 ## Results
@@ -138,8 +143,6 @@ The notebook `notebooks/TSP_Coursework.ipynb` walks through the same
 experiments with the reasoning made explicit at each step. It is the single
 source of truth for this project; `src/` and `demo.py` are faithful
 extractions of it.
-
-**Video demonstration:** <unlisted YouTube link>
 
 ---
 
